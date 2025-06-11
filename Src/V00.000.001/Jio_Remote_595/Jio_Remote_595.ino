@@ -1,5 +1,5 @@
-//#define NEW_IDE
-#define OLD_IDE
+#define NEW_IDE
+//#define OLD_IDE
 
 #if defined OLD_IDE // Arduino IDE version 1.xx
   #include "OTA_V4.h"
