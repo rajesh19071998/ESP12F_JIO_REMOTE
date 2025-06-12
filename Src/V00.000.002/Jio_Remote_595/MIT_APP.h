@@ -1,6 +1,7 @@
 #ifndef _MIT_APP_H
 #define _MIT_APP_H
 
+/*
 #ifndef _ESP8266_WIFI_H
   #define _ESP8266_WIFI_H
   #include <ESP8266WiFi.h>
@@ -9,7 +10,7 @@
   #define _ESPASYNC_WEB_SERVER_H  
   #include <ESPAsyncWebServer.h>
 #endif //_ESPASYNC_WEB_SERVER_H
-
+*/
 #include "Wifi_functions.h"
 
 WiFiServer MIT_server(80);

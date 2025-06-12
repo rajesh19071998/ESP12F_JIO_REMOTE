@@ -53,15 +53,7 @@ const String ota_v5_ver = "OTA_V5 : V00.000.001";
   WebServer OTA_server(80);
 #endif
 
-
- String MIT_INFO_DATA =" Hi MIT APP USER!\n This is JIO_Remote (ESP Board No 2).\nPlease Enter\n For Local -> http://192.168.31.250/update  \n OR \n For Global -> https://remote.rajeshv.in/update \nTo update Firmware.";
- /* Hotspot IP : http://192.168.4.1 */
- String DATA;
- char DATA_1[20];
- int MIT_flag = 0;
- int DEBUG = 1;
-
-
+ static int DEBUG = 1;
 
 unsigned long ota_progress_millis = 0;
 
