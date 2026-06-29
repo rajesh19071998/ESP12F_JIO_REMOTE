@@ -1,0 +1,234 @@
+// Google Apps Script for managing ESP boards in a Google Sheet
+// - Exposes doGet/doPost web endpoints that both forward to handleRequest
+// - Supports actions: AddESP, LogOutESP, ClearAll
+// - Writes/updates rows on a sheet named "Sheet1"
+
+// Spreadsheet ID to operate on (replace if you need a different sheet)
+const SPREADSHEET_ID = "1UNbi_AR6szoaBBUkKiyMhwXmqGe6pRnLv8FFL6BndKQ"; // replace if needed
+// Time zone used for timestamp formatting
+const TIME_ZONE = "Asia/Kolkata";
+
+// HTTP GET entry point for web app. Forwards to shared handler.
+function doGet(e) {
+  return handleRequest(e);
+}
+// HTTP POST entry point for web app. Forwards to shared handler.
+function doPost(e) {
+  return handleRequest(e);
+}
+
+// Central request handler. Expects an URL parameter named 'Action' and other
+// action-specific parameters (see below). Returns a JSON response object.
+function handleRequest(e) {
+  var response = { status: "error", message: "No action" };
+  // Validate incoming event object and required parameter
+  if (!e || !e.parameter || !e.parameter.Action) {
+    // Return JSON error if Action is missing
+    return ContentService.createTextOutput(JSON.stringify(response)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  var action = e.parameter.Action;
+  // Open the spreadsheet and get the working sheet (Sheet1)
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var sheet1 = ss.getSheetByName("Sheet1");
+  if (!sheet1) {
+    response.message = "Sheet1 not found";
+    return ContentService.createTextOutput(JSON.stringify(response)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  try {
+    // Dispatch actions to helper functions. Each helper returns a {status, message} object.
+    if (action === "AddESP") {
+      response = addUser(e, sheet1);
+    } else if (action === "LogOutESP") {
+      response = LogOutUser(e, sheet1);
+    } else if (action === "ClearAll") {
+      response = clearAll(sheet1);
+    } else {
+      response.message = "Unknown action";
+    }
+  } catch (err) {
+    // Catch unexpected errors and return as JSON
+    response.status = "error";
+    response.message = String(err);
+  }
+
+  return ContentService.createTextOutput(JSON.stringify(response)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/* return numeric row index (>=2) if a row matching espName and espNum is found, otherwise 0
+   - sheet: the Sheet object to search (assumes header row at row 1)
+   - espName, espNum: if provided, both must match the row to be considered the same device
+   The function reads columns A and B for efficiency and returns the first matching row number.
+*/
+function VerifyESP(sheet, espName, espNum) {
+  if (!espName && !espNum) return 0;
+  var lastRow = Math.max(2, sheet.getLastRow());
+  if (lastRow < 2) return 0;
+
+  // Read existing rows once (columns A and B)
+  var dataRange = sheet.getRange(2, 1, lastRow - 1, 2);
+  var values = dataRange.getValues(); // [[name, num], ...]
+
+  for (var idx = 0; idx < values.length; idx++) {
+    var rowName = values[idx][0];
+    var rowNum  = values[idx][1];
+    // Strict string comparison to avoid type mismatches
+    if ((espName && String(rowName) === String(espName)) &&
+        (espNum  && String(rowNum)  === String(espNum))) {
+      return idx + 2; // actual sheet row number (account for header)
+    }
+  }
+  return 0;
+}
+
+/* addUser: add a new ESP row or update existing row
+   Expected URL parameters (e.parameter):
+     - ESPName (required): unique name for the ESP
+     - ESPNum (recommended): identifier/serial number
+     - ESPIP, ESP_G_IP, ESP_TYPE, ESP_APPL_V, ESP_BSW_V, SW_DATE, ESP_DNS (optional)
+   Behaviour:
+     - If the device is not found, append a new row with the provided values and a sign-up timestamp
+     - If found, update columns B..J with latest values and update the timestamp
+   Note: Uses a script lock to avoid concurrent updates when multiple devices call the endpoint.
+*/
+function addUser(e, sheet) {
+  var ESPName    = e.parameter.ESPName;
+  var ESPNum     = e.parameter.ESPNum;
+  if (!ESPName) return { status: "error", message: "ESPName required" };
+
+  var ESPIP      = e.parameter.ESPIP || "";
+  var ESP_G_IP   = e.parameter.ESP_G_IP || "";
+  var ESP_TYPE   = e.parameter.ESP_TYPE || "";
+  var ESP_APPL_V = e.parameter.ESP_APPL_V || "";
+  var ESP_BSW_V  = e.parameter.ESP_BSW_V || "";
+  var SW_DATE    = e.parameter.SW_DATE || "";
+  var ESP_DNS    = e.parameter.ESP_DNS || "";
+
+  // Build human-readable timestamp for sign-up/update
+  var nowDate = Utilities.formatDate(new Date(), TIME_ZONE, 'dd-MM-yyyy');
+  var nowTime = Utilities.formatDate(new Date(), TIME_ZONE, 'HH:mm:ss');
+  var First_SignUp_Time = nowDate + " @ " + nowTime;
+
+  // Acquire a script lock to avoid race conditions when multiple requests arrive
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    return { status: "error", message: "Could not acquire lock" };
+  }
+  try {
+    var row = VerifyESP(sheet, ESPName, ESPNum);
+    if (!row) {
+      // Append a new row with columns: A..J => [ESPName, ESPNum, ESPIP, Timestamp, ESP_G_IP, ESP_TYPE, ESP_APPL_V, ESP_BSW_V, SW_DATE, ESP_DNS]
+      sheet.appendRow([ESPName, ESPNum, ESPIP, First_SignUp_Time, ESP_G_IP, ESP_TYPE, ESP_APPL_V, ESP_BSW_V, SW_DATE, ESP_DNS]);
+      return { status: "ok", message: "New ESP BOARD Added" };
+    } else {
+      // Update columns B..J (column 2..10) in a single setValues call for efficiency
+      var updateValues = [[ESPNum, ESPIP, First_SignUp_Time, ESP_G_IP, ESP_TYPE, ESP_APPL_V, ESP_BSW_V, SW_DATE, ESP_DNS]];
+      sheet.getRange(row, 2, 1, updateValues[0].length).setValues(updateValues);
+      return { status: "ok", message: "ESP IP Updated Successfully" };
+    }
+  } finally {
+    // Always release the lock in a finally block to avoid deadlocks
+    lock.releaseLock();
+  }
+}
+
+
+
+      // Helper: parse timestamps in format 'dd-MM-yyyy @ HH:mm:ss' or accept Date objects
+      function parseTimestamp(ts) {
+        if (!ts) return null;
+        if (ts instanceof Date) return ts;
+        var s = String(ts).trim();
+        var parts = s.split(' @ ');
+        if (parts.length !== 2) return null;
+        var d = parts[0].split('-');
+        var t = parts[1].split(':');
+        if (d.length !== 3 || t.length < 2) return null;
+        var day = parseInt(d[0], 10);
+        var month = parseInt(d[1], 10) - 1;
+        var year = parseInt(d[2], 10);
+        var hour = parseInt(t[0], 10) || 0;
+        var min = parseInt(t[1], 10) || 0;
+        var sec = parseInt(t[2], 10) || 0;
+        return new Date(year, month, day, hour, min, sec);
+      }
+
+            // Helper: format duration (ms) as optional 'Nd ' prefix and HH:MM:SS
+      function formatDuration(ms) {
+        if (!ms || ms < 0) ms = 0;
+        var totalSec = Math.floor(ms / 1000);
+        var days = Math.floor(totalSec / 86400);
+        totalSec = totalSec % 86400;
+        var hours = Math.floor(totalSec / 3600);
+        totalSec = totalSec % 3600;
+        var mins = Math.floor(totalSec / 60);
+        var secs = totalSec % 60;
+        var hh = ('0' + hours).slice(-2);
+        var mm = ('0' + mins).slice(-2);
+        var ss = ('0' + secs).slice(-2);
+        return (days > 0 ? (days + ' d ') : '') + hh + ' h ' + mm + ' m ' + ss + ' s';
+      }
+
+
+
+/* LogOutUser: record logout time for an ESP
+   Expected URL parameters: ESPName or ESPNum (one or both)
+   If a matching row is found, writes the logout timestamp to column K (index 11).
+*/
+function LogOutUser(e, sheet) {
+  var ESPName = e.parameter.ESPName;
+  var ESPNum  = e.parameter.ESPNum;
+  if (!ESPName && !ESPNum) return { status: "error", message: "ESPName or ESPNum required" };
+
+  var nowDate = Utilities.formatDate(new Date(), TIME_ZONE, 'dd-MM-yyyy');
+  var nowTime = Utilities.formatDate(new Date(), TIME_ZONE, 'HH:mm:ss');
+  var LogOut_Time = nowDate + " @ " + nowTime;
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    return { status: "error", message: "Could not acquire lock" };
+  }
+  try {
+    var row = VerifyESP(sheet, ESPName, ESPNum);
+    if (row) {
+      // Column K is index 11 (A=1) - write logout timestamp
+      sheet.getRange(row, 11).setValue(LogOut_Time);
+
+      // Read the First_SignUp_Time from column D (index 4)
+      var firstSignUpCell = sheet.getRange(row, 4).getValue();
+      var lastLogoutCell = sheet.getRange(row, 11).getValue();
+      var signupDate = parseTimestamp(firstSignUpCell);
+      var logoutDate = parseTimestamp(lastLogoutCell);
+      var durationStr = "";
+      if (signupDate && logoutDate) {
+        var diffMs = logoutDate.getTime() - signupDate.getTime();
+        durationStr = formatDuration(diffMs);
+      } else {
+        // If parsing failed, leave duration blank or write 'unknown'
+        durationStr = "unknown";
+      }
+
+      // Write duration to column 12 (L)
+      sheet.getRange(row, 12).setValue(durationStr);
+
+      return { status: "ok", message: "ESP Log Out Time Updated" };
+    } else {
+      return { status: "error", message: "ESP not found" };
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* clearAll: remove all data rows (keeps header row 1 intact)
+   This clears contents from row 2 through the last row and across all columns.
+*/
+function clearAll(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+    return { status: "ok", message: "Cleared rows" };
+  }
+  return { status: "ok", message: "Nothing to clear" };
+}
